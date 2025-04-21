@@ -1,4 +1,13 @@
-# graph_builder.py
+'''
+Graph Builder
+Objective: To organize the extracted axioms A and their embedded concepts into a structured graph G representing the regulatory landscape.
+Process:
+    Node Creation: Create an AxiomNode in V for each a ∈ A. Create ConceptNodes for unique canonicalized concepts identified in the Subject, Object, and Keywords fields of the axioms. Canonicalization can use stemming, lemmatization, and potentially mapping to a controlled vocabulary or ontology (e.g., map "PII" and "Personal Identifiable Information" to the same node 'Personal Data').
+    Edge Inference:
+        - relates_to(AxiomNode, ConceptNode): Create edges connecting each axiom to the concept nodes representing its core subject, object, and keywords.
+        - is_a(ConceptNode_sub, ConceptNode_super): Infer initial hierarchical links based on explicit definitions within the text ("Personal data includes name, address...") or simple subsumption identified during extraction/canonicalization. This forms the base hierarchy for expansion.
+        - depends_on(AxiomNode_i, AxiomNode_j): Infer dependencies based on explicit cross-references ("See section 3.b"), shared specific conditions, or semantic similarity suggesting prerequisite relationships. Graph algorithms analyzing text references or embedding similarities might be used.
+'''
 import logging
 import networkx as nx
 from typing import List, Dict, Any, Set
@@ -201,6 +210,18 @@ def build_akg(axioms: List[Axiom]) -> nx.DiGraph:
 def export_graph(graph: nx.DiGraph, output_path: str):
     """Export the graph to a file in specified format."""
     logging.info(f"Exporting graph to {output_path}...")
+    # Before exporting the graph
+    for node, data in graph.nodes(data=True):
+        # Replace None values with strings in node attributes
+        for key, value in data.items():
+            if value is None:
+                data[key] = "None"  # or ""
+
+    for u, v, data in graph.edges(data=True):
+        # Replace None values with strings in edge attributes
+        for key, value in data.items():
+            if value is None:
+                data[key] = "None"  # or ""
     
     # Determine export format based on file extension
     if output_path.endswith('.gml'):
@@ -222,7 +243,7 @@ if __name__ == "__main__":
     from src.policy_extractor import extract_axioms
     from src.config import POLICY_FILE_PATH, GRAPH_FILE
     from src.llms import OpenAILLMClient
-    from src.policy_loader import load_policy_text
+    from src.policy_loader import load_regulation_text
     from src.policy_extractor import policy_extraction
     
     # Configure logging
@@ -233,7 +254,7 @@ if __name__ == "__main__":
     llm_client = OpenAILLMClient("gpt-4o")
     
     # Load policy text
-    policy_text = load_policy_text(POLICY_FILE_PATH)
+    policy_text = load_regulation_text(POLICY_FILE_PATH)
 
     # extract rules from policy text
     rules = policy_extraction(llm_client, policy_text)
