@@ -1,11 +1,13 @@
 '''Implements LLM clients and related utilities'''
 
 import logging
+import os
 from typing import Any, Optional
 import openai
 import anthropic
 import huggingface_hub
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 
 
 class LLMClient:
@@ -42,17 +44,22 @@ class AnthropicLLMClient(LLMClient):
         response = self.client.messages.create(model=self.model_name, messages=messages, **kwargs)
         return response.choices[0].message.content
 
+
 class GeminiLLMClient(LLMClient):
     def __init__(self, model_name: str):
         super().__init__(model_name)
-        self.client = genai.GenerativeAI()
+        self.client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
     def invoke(self, prompt: str, system_prompt: str = None, **kwargs) -> str:
-        messages = []
         if system_prompt:
-            messages.append({"role": "system", "content": system_prompt})
-        messages.append({"role": "user", "content": prompt})
-        response = self.client.generate_content(model=self.model_name, messages=messages, **kwargs)
+            response = self.client.models.generate_content(
+                model=self.model_name, 
+                config=types.GenerateContentConfig(system_instruction=system_prompt),
+                contents=prompt)
+        else:
+            response = self.client.models.generate_content(
+                model=self.model_name, 
+                contents=prompt)
         return response.text
 
 class HuggingFaceLLMClient(LLMClient):
