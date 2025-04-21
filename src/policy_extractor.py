@@ -1,5 +1,21 @@
 import logging
-from src.llms import OpenAILLMClient
+import json
+from typing import List
+from src.llms import LLMClient, OpenAILLMClient
+from src.utils import parse_json_response
+
+from dataclasses import dataclass
+
+@dataclass
+class Axiom:
+    id: str
+    source: str
+    subject: str
+    predicate: str
+    object: str
+    modality: str
+    condition: str
+    keywords: List[str]
 
 POLICY_EXTRACT_SYSTEM_PROMPT = """You are a helpful policy extraction model to identify actionable policies from organizational safety guidelines. \
     Your task is to exhaust all the potential policies from the provided organization handbook \
@@ -49,17 +65,34 @@ Provide the output in the following JSON format:
 
 #### Policy Document:
 """
+
+def extract_axioms(rules):
+    axioms = []
+    for rule in rules:
+        axiom = Axiom(
+            id=rule["ID"],
+            source=rule["Source"],
+            subject=rule["Subject"],
+            predicate=rule["Predicate"],
+            object=rule["Object"],
+            modality=rule["Modality"],
+            condition=rule["Condition"],
+            keywords=rule["Keywords"]
+        )
+        axioms.append(axiom)
+    return axioms
     
-def policy_extraction(regulation_text):
-    llm = OpenAILLMClient(model_name="gpt-4o")
+def policy_extraction(llm_client: LLMClient, regulation_text):
     prompt = POLICY_EXTRACT_PROMPT+regulation_text
-    response = llm.invoke(prompt, system_prompt=POLICY_EXTRACT_SYSTEM_PROMPT)
-    return response
+    response = llm_client.invoke(prompt, system_prompt=POLICY_EXTRACT_SYSTEM_PROMPT)
+    rules = parse_json_response(response)
+    return rules
 
 
 if __name__ == "__main__":
     from src.policy_loader import load_regulation_text
     regulation_text = load_regulation_text("/home/ljiahao/xianglin/git_space/regulation2testcase/docs/openai.txt")
-    response = policy_extraction(regulation_text)
-    print(response)
+    llm_client = OpenAILLMClient(model_name="gpt-4o")
+    rules = policy_extraction(llm_client, regulation_text)
+    print(rules)
 
