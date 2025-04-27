@@ -97,7 +97,7 @@ def add_expansion_to_graph(graph: nx.Graph, parent_node_id: str, sub_concepts: L
         if sub_concept_id and sub_concept_id != parent_node_id:
             if sub_concept_id not in graph:
                 graph.add_node(sub_concept_id, node_type="concept", label=sub_concept, expansion_depth=current_depth + 1)
-            graph.add_edge(sub_concept_id, parent_node_id, type="is_a") # Child -> Parent for is_a
+            graph.add_edge(sub_concept_id, parent_node_id, type="is_example_of") # Child -> Parent for is_example_of
 
 
 def expand_graph(llm_client: LLMClient, graph: nx.Graph, max_depth: int = 1) -> nx.Graph:
@@ -129,49 +129,34 @@ def expand_graph(llm_client: LLMClient, graph: nx.Graph, max_depth: int = 1) -> 
     logging.info(f"Graph expansion finished. Final size: {current_graph.number_of_nodes()} nodes, {current_graph.number_of_edges()} edges.")
     return current_graph
 
+def load_graph(graph_file: str) -> nx.Graph:
+    """Loads a graph from a file."""
+    return nx.read_gml(graph_file)
+
 
 if __name__ == "__main__":
-    from src.policy_extractor import extract_axioms
-    from src.config import POLICY_FILE_PATH, GRAPH_FILE
     from src.llms import OpenAILLMClient
-    from src.policy_loader import load_regulation_text
-    from src.policy_extractor import policy_extraction
-    from src.graph_builder import build_akg, export_graph
+    from src.graph_builder import export_graph
 
-    # --- Build graph ---
+    POLICY_FILE_PATH = "/home/ljiahao/xianglin/git_space/regulation2testcase/docs/openai.txt"
+    GRAPH_FILE = "graph.gml"
     
     # Configure logging
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-    
-    # Initialize LLM client
-    policy_llm_client = OpenAILLMClient("gpt-4o")
-    expansion_llm_client = OpenAILLMClient("gpt-4.1")
-    
-    # Load policy text
-    policy_text = load_regulation_text(POLICY_FILE_PATH)
 
-    # extract rules from policy text
-    rules = policy_extraction(policy_llm_client, policy_text)
+    # --- Load graph ---
+    logging.info(f"Loading graph from {GRAPH_FILE}...")
+    graph = load_graph(GRAPH_FILE)
     
-    # Extract axioms
-    axioms = extract_axioms(rules)
-    logging.info(f"Extracted {len(axioms)} axioms from policy.")
-    
-    # Build knowledge graph
-    graph = build_akg(axioms)
-    
-    # Export graph
-    export_graph(graph, GRAPH_FILE)
-    
-    # Print summary statistics
+    # --- Print summary statistics ---
     print(f"Graph built with {graph.number_of_nodes()} nodes and {graph.number_of_edges()} edges.")
     print(f"Node types: {set(nx.get_node_attributes(graph, 'node_type').values())}")
     print(f"Edge types: {set(nx.get_edge_attributes(graph, 'type').values())}")
 
-
     # --- Expand graph ---
     GRAPH_EXPANDED_FILE = "expanded_graph.gml"
-    expanded_graph = expand_graph(expansion_llm_client, graph, max_depth=2)
+    expansion_llm_client = OpenAILLMClient("gpt-4o-mini")
+    expanded_graph = expand_graph(expansion_llm_client, graph, max_depth=3)
     export_graph(expanded_graph, GRAPH_EXPANDED_FILE)
 
     # --- Print summary statistics ---
