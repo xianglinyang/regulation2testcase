@@ -2,6 +2,10 @@
 import logging
 from typing import List
 import networkx as nx
+import matplotlib.pyplot as plt
+import random
+
+from src.logging_utils import setup_logging
 
 
 # --- Sampling Strategies ---
@@ -9,6 +13,7 @@ SAMPLING_STRATEGY_ALL_AXIOMS = "all_axioms"
 SAMPLING_STRATEGY_LEAF_CONCEPTS = "leaf_concepts"
 SAMPLING_STRATEGY_AXIOMS_AND_LEAVES = "axioms_and_leaves"
 SAMPLING_STRATEGY_ALL_NODES = "all_nodes"
+SAMPLING_STRATEGY_ALL_CONCEPTS = "all_concepts"
 
 def select_target_nodes(
     graph: nx.Graph,
@@ -27,43 +32,60 @@ def select_target_nodes(
         targets.update(n for n, data in graph.nodes(data=True) if data.get('node_type') == 'axiom')
 
     elif strategy == SAMPLING_STRATEGY_LEAF_CONCEPTS:
-        # Leaf concepts = concept nodes with no outgoing 'is_a' edges (no sub-concepts)
-        # Note: This definition assumes 'is_a' edges go from child to parent (sub -> super)
-        # If your 'is_a' edges go parent->child, reverse the logic (in_degree == 0 for 'is_a')
+        # Get all concept nodes
         all_concepts = {n for n, data in graph.nodes(data=True) if data.get('node_type') == 'concept'}
-        non_leaf_concepts = set()
+        logging.info(f"Total concept nodes: {len(all_concepts)}")
+        
+        # A leaf concept is one that is not a parent in any 'is_example_of' relationship
+        # First, identify all parent concepts (those that have children)
+        parent_concepts = set()
         for u, v, data in graph.edges(data=True):
-             # Assuming is_a edge goes FROM sub-concept TO parent-concept
-             if data.get('type') == 'is_a' and u in all_concepts:
-                  non_leaf_concepts.add(u) # u is a sub-concept, therefore not a leaf in this direction
-
-        leaf_concepts = all_concepts - non_leaf_concepts
+            if data.get('type') == 'is_example_of':
+                # v is the parent concept in an is_example_of relationship
+                parent_concepts.add(v)
+        
+        # Leaf concepts are those that aren't parents
+        leaf_concepts = all_concepts - parent_concepts
+        logging.info(f"Found {len(parent_concepts)} parent concepts and {len(leaf_concepts)} leaf concepts")
         targets.update(leaf_concepts)
 
     elif strategy == SAMPLING_STRATEGY_AXIOMS_AND_LEAVES:
         # Combine All Axioms and Leaf Concepts
-        targets.update(n for n, data in graph.nodes(data=True) if data.get('node_type') == 'axiom')
-        # --- Duplicating leaf finding logic for clarity ---
+        axiom_nodes = {n for n, data in graph.nodes(data=True) if data.get('node_type') == 'axiom'}
+        targets.update(axiom_nodes)
+        
+        # Get all concept nodes
         all_concepts = {n for n, data in graph.nodes(data=True) if data.get('node_type') == 'concept'}
-        non_leaf_concepts = set()
+        
+        # A leaf concept is one that is not a parent in any 'is_example_of' relationship
+        parent_concepts = set()
         for u, v, data in graph.edges(data=True):
-             if data.get('type') == 'is_example_of' and u in all_concepts: # Assuming sub -> super
-                  non_leaf_concepts.add(u)
-        leaf_concepts = all_concepts - non_leaf_concepts
-        # --- End Duplication ---
+            if data.get('type') == 'is_example_of':
+                # v is the parent concept in an is_example_of relationship
+                parent_concepts.add(v)
+        
+        leaf_concepts = all_concepts - parent_concepts
         targets.update(leaf_concepts)
+        
+    elif strategy == SAMPLING_STRATEGY_ALL_NODES:
+        targets.update(all_nodes)
+        
+    elif strategy == SAMPLING_STRATEGY_ALL_CONCEPTS:
+        targets.update(n for n, data in graph.nodes(data=True) if data.get('node_type') == 'concept')
 
     else:
         logging.error(f"Unknown sampling strategy: {strategy}. Defaulting to all axioms and leaves.")
-        targets.update(n for n, data in graph.nodes(data=True) if data.get('node_type') == 'axiom')
+        axiom_nodes = {n for n, data in graph.nodes(data=True) if data.get('node_type') == 'axiom'}
+        targets.update(axiom_nodes)
+        
         all_concepts = {n for n, data in graph.nodes(data=True) if data.get('node_type') == 'concept'}
-        non_leaf_concepts = set()
+        parent_concepts = set()
         for u, v, data in graph.edges(data=True):
-             if data.get('type') == 'is_example_of' and u in all_concepts: # Assuming sub -> super
-                  non_leaf_concepts.add(u)
-        leaf_concepts = all_concepts - non_leaf_concepts
+            if data.get('type') == 'is_example_of':
+                parent_concepts.add(v)
+        
+        leaf_concepts = all_concepts - parent_concepts
         targets.update(leaf_concepts)
-
 
     target_list = list(targets)
     logging.info(f"Selected {len(target_list)} target nodes for query generation using strategy '{strategy}'.")
@@ -71,49 +93,80 @@ def select_target_nodes(
 
 def get_node_context(node_id: str, graph: nx.DiGraph):
     """Find the root axiom node id for a given concept node id"""
-    current_node = node_id
-    visited = set()
-    
-    # First check if the current node is already an axiom
-    if graph.nodes[current_node].get('node_type') == 'axiom':
-        return graph.nodes[current_node]
+    # Check if node exists in the graph
+    if node_id not in graph.nodes:
+        logging.warning(f"Node {node_id} not found in graph")
+        return None
         
-    # Get all edges where current_node is the target
-    for source, target, data in graph.in_edges(current_node, data=True):
-        if source not in visited:
-            visited.add(source)
-            # Check all possible edge types that might connect to an axiom
-            if (data.get('type') in ['related_axiom', 'relates_to', 'is_a'] and 
-                graph.nodes[source].get('node_type') == 'axiom'):
-                return graph.nodes[source]
-            # If not a direct axiom connection, check the source node
-            result = get_node_context(source, graph)
-            if result is not None:
-                return graph.nodes[result]
+    # First check if the current node is already an axiom
+    if graph.nodes[node_id].get('node_type') == 'axiom':
+        return graph.nodes[node_id]
+    
+    # Use a breadth-first approach to find connected axioms
+    visited = set([node_id])
+    queue = [node_id]
+    
+    while queue:
+        current = queue.pop(0)
+        
+        # Check both incoming and outgoing edges
+        for edge_func in [graph.in_edges, graph.out_edges]:
+            for u, v, data in edge_func(current, data=True):
+                # Determine the neighbor node
+                neighbor = u if v == current else v
                 
+                if neighbor not in visited:
+                    visited.add(neighbor)
+                    queue.append(neighbor)
+                    
+                    # Check if this neighbor is an axiom
+                    if graph.nodes[neighbor].get('node_type') == 'axiom':
+                        return graph.nodes[neighbor]
+    
+    # No axiom found in the connected component
+    logging.warning(f"No axiom context found for node {node_id}")
     return None
 
-            
 
-if __name__ == "__main__":
-    import networkx as nx
-    import matplotlib.pyplot as plt
-    import random
+def demo():
+    setup_logging(task_name="graph_sampling")
 
     # --- Load the graph ---
     GRAPH_PATH = "expanded_graph.gml"
     graph = nx.read_gml(GRAPH_PATH)
-
     # --- Print summary statistics ---
-    print(f"Graph built with {graph.number_of_nodes()} nodes and {graph.number_of_edges()} edges.")
-    print(f"Node types: {set(nx.get_node_attributes(graph, 'node_type').values())}")
-    print(f"Edge types: {set(nx.get_edge_attributes(graph, 'type').values())}")
+    logging.info(f"Graph built with {graph.number_of_nodes()} nodes and {graph.number_of_edges()} edges.")
+    logging.info(f"Node types: {set(nx.get_node_attributes(graph, 'node_type').values())}")
+    logging.info(f"Edge types: {set(nx.get_edge_attributes(graph, 'type').values())}")
+
+    targets = select_target_nodes(graph, SAMPLING_STRATEGY_LEAF_CONCEPTS)
+    logging.info(f"Selected {len(targets)} target nodes for query generation using strategy '{SAMPLING_STRATEGY_LEAF_CONCEPTS}'.")
+
+    targets = select_target_nodes(graph, SAMPLING_STRATEGY_ALL_NODES)
+    logging.info(f"Selected {len(targets)} target nodes for query generation using strategy '{SAMPLING_STRATEGY_ALL_NODES}'.")
 
     targets = select_target_nodes(graph, SAMPLING_STRATEGY_AXIOMS_AND_LEAVES)
+    logging.info(f"Selected {len(targets)} target nodes for query generation using strategy '{SAMPLING_STRATEGY_AXIOMS_AND_LEAVES}'.")
 
+    targets = select_target_nodes(graph, SAMPLING_STRATEGY_ALL_AXIOMS)
+    logging.info(f"Selected {len(targets)} target nodes for query generation using strategy '{SAMPLING_STRATEGY_ALL_AXIOMS}'.")
+
+    targets = select_target_nodes(graph, SAMPLING_STRATEGY_ALL_CONCEPTS)
+    logging.info(f"Selected {len(targets)} target nodes for query generation using strategy '{SAMPLING_STRATEGY_ALL_CONCEPTS}'.")
+
+    # --- Sample a target node ---
     selected_targets = random.sample(targets, 1)[0]
-    print(f"Selected target: {selected_targets}")
+    logging.info(f"Selected target: {selected_targets}")
     
     context = get_node_context(selected_targets, graph)
-    print(f"\nContext: {context}")
+    logging.info(f"\nContext: {context}")
+
+            
+
+if __name__ == "__main__":
+    demo()
+
+
+
+    
 

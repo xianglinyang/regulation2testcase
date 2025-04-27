@@ -38,13 +38,14 @@ Graph Building Process:
 import logging
 import networkx as nx
 from typing import List, Dict, Any, Set
-import re
 from collections import defaultdict
 
 from src.policy_extractor import Axiom
 from src.utils import parse_json_response
 from src.llms import LLMClient
-from src.graph_sampling import get_node_context
+
+logger = logging.getLogger(__name__)
+
 # --- Concept Extraction and Canonicalization ---
 NONE2VALID_SYSTEM_PROMPT = """You are an expert in the field of policy analysis and interpretation. \
 Your task is to generate a valid case of a concept in violeting a policy.
@@ -288,10 +289,9 @@ def build_akg(axioms: List[Axiom], llm_client: LLMClient) -> nx.DiGraph:
 
 
 if __name__ == "__main__":
-    from src.policy_extractor import extract_axioms
+    from src.policy_extractor import extract_axioms, policy_extraction, pretty_print_axioms
     from src.llms import OpenAILLMClient
     from src.policy_loader import load_regulation_text
-    from src.policy_extractor import policy_extraction, pretty_print_axioms
     from src.utils import export_graph
     from src.logging_utils import setup_logging
 

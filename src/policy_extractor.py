@@ -21,7 +21,7 @@ import logging
 from typing import List, Dict
 from src.llms import LLMClient, OpenAILLMClient
 from src.utils import parse_json_response
-
+from src.logging_utils import setup_logging
 from src.policy_loader import load_regulation_text
 
 from dataclasses import dataclass
@@ -134,28 +134,33 @@ def policy_extraction(llm_client: LLMClient, regulation_text):
 def pretty_print_axioms(axioms: List[Axiom]):
     # pretty print the axioms
     for axiom in axioms:
-        print(f"ID: {axiom.ID}")
-        print(f"SourceLocation: {axiom.SourceLocation}")
-        print(f"SourceText: {axiom.SourceText}")
-        print(f"Subject: {axiom.Subject}")
-        print(f"Action: {axiom.Action}")
-        print(f"Object: {axiom.Object}")
-        print(f"Modality: {axiom.Modality}")
-        print(f"Method: {axiom.Method}")
-        print(f"Domain: {axiom.Domain}")
-        print(f"Temporal: {axiom.Temporal}")
-        print(f"Purpose: {axiom.Purpose}")
-        print(f"Condition: {axiom.Condition}")
-        print(f"Keywords: {axiom.Keywords}")
-        print("-"*100)
+        logging.info(f"ID: {axiom.ID}")
+        logging.info(f"SourceLocation: {axiom.SourceLocation}")
+        logging.info(f"SourceText: {axiom.SourceText}")
+        logging.info(f"Subject: {axiom.Subject}")
+        logging.info(f"Action: {axiom.Action}")
+        logging.info(f"Object: {axiom.Object}")
+        logging.info(f"Modality: {axiom.Modality}")
+        logging.info(f"Method: {axiom.Method}")
+        logging.info(f"Domain: {axiom.Domain}")
+        logging.info(f"Temporal: {axiom.Temporal}")
+        logging.info(f"Purpose: {axiom.Purpose}")
+        logging.info(f"Condition: {axiom.Condition}")
+        logging.info(f"Keywords: {axiom.Keywords}")
+        logging.info("-"*100)
 
 
 if __name__ == "__main__":
+    setup_logging(task_name="policy_extractor")
+
     regulation_text = load_regulation_text("/home/ljiahao/xianglin/git_space/regulation2testcase/docs/openai.txt")
+    
     llm_client = OpenAILLMClient(model_name="gpt-4o")
     rules = policy_extraction(llm_client, regulation_text)
+    logging.info(f"Extracted {len(rules)} rules from the regulation text.")
+    
     axioms = extract_axioms(rules)
-
+    logging.info(f"Extracted {len(axioms)} axioms from the rules.")
     # pretty print the axioms
     pretty_print_axioms(axioms)
 

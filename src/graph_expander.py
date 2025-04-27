@@ -46,22 +46,14 @@ Provide the output in the following JSON format:
 
 #### Input Context and Concept
 """
-VALIDATION_SYSTEM_PROMPT = """
-You are a helpful assistant that validates the sub-concepts for a given concept.
-"""
-
-VALIDATION_USER_PROMPT = """
-
-""" 
 
 # ---------- Helper functions ----------
-
-def select_concepts_for_expansion(graph: nx.Graph, depth: int = 0) -> List[str]:
+def select_concepts_for_expansion(graph: nx.Graph, field_to_expand: List[str] = ["Subject", "Object", "Method", "Domain", "Purpose"], depth: int = 0) -> List[str]:
     """Selects concept nodes suitable for expansion."""
     # TODO: Implement selection strategy (e.g., based on node degree, abstraction level, current depth)
     candidates = [
         node for node, data in graph.nodes(data=True)
-        if data.get('node_type') == 'concept' and data.get('expansion_depth', -1) < depth
+        if data.get('node_type') == 'concept' and data.get('expansion_depth', -1) < depth and data.get('role') in field_to_expand
     ]
     logging.info(f"Selected {len(candidates)} concept nodes for expansion at depth {depth}.")
     return candidates
@@ -76,7 +68,7 @@ def generate_subconcepts_llm(llm_client: LLMClient, concept_node_id: str, graph:
     concept = f"Concept: {concept_label}\n"
     prompt = EXPANSION_USER_PROMPT + context + concept
 
-    logging.debug(f"Generating sub-concepts for: {concept_label}")
+    logging.info(f"Generating sub-concepts for: {concept_label}")
 
     response = llm_client.invoke(
         prompt=prompt,
@@ -85,7 +77,7 @@ def generate_subconcepts_llm(llm_client: LLMClient, concept_node_id: str, graph:
     llm_output = parse_json_response(response)
     sub_concepts = llm_output[0]['sub-concepts']
 
-    logging.debug(f"Generated sub-concepts for {concept_label}: {sub_concepts}")
+    logging.info(f"Generated sub-concepts for {concept_label}: {sub_concepts}")
     return sub_concepts
 
 
@@ -108,7 +100,7 @@ def expand_graph(llm_client: LLMClient, graph: nx.Graph, max_depth: int = 1) -> 
 
     for depth in range(max_depth):
         logging.info(f"--- Expansion Level {depth + 1} ---")
-        concepts_to_expand = select_concepts_for_expansion(current_graph, depth)
+        concepts_to_expand = select_concepts_for_expansion(current_graph, depth=depth)
         
         if not concepts_to_expand:
             logging.info("No more concepts to expand at this level.")
@@ -129,29 +121,25 @@ def expand_graph(llm_client: LLMClient, graph: nx.Graph, max_depth: int = 1) -> 
     logging.info(f"Graph expansion finished. Final size: {current_graph.number_of_nodes()} nodes, {current_graph.number_of_edges()} edges.")
     return current_graph
 
-def load_graph(graph_file: str) -> nx.Graph:
-    """Loads a graph from a file."""
-    return nx.read_gml(graph_file)
-
 
 if __name__ == "__main__":
     from src.llms import OpenAILLMClient
-    from src.graph_builder import export_graph
+    from src.utils import export_graph, load_graph
+    from src.logging_utils import setup_logging
+
+    setup_logging(task_name="graph_expander")
 
     POLICY_FILE_PATH = "/home/ljiahao/xianglin/git_space/regulation2testcase/docs/openai.txt"
     GRAPH_FILE = "graph.gml"
-    
-    # Configure logging
-    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
     # --- Load graph ---
     logging.info(f"Loading graph from {GRAPH_FILE}...")
     graph = load_graph(GRAPH_FILE)
     
     # --- Print summary statistics ---
-    print(f"Graph built with {graph.number_of_nodes()} nodes and {graph.number_of_edges()} edges.")
-    print(f"Node types: {set(nx.get_node_attributes(graph, 'node_type').values())}")
-    print(f"Edge types: {set(nx.get_edge_attributes(graph, 'type').values())}")
+    logging.info(f"Graph built with {graph.number_of_nodes()} nodes and {graph.number_of_edges()} edges.")
+    logging.info(f"Node types: {set(nx.get_node_attributes(graph, 'node_type').values())}")
+    logging.info(f"Edge types: {set(nx.get_edge_attributes(graph, 'type').values())}")
 
     # --- Expand graph ---
     GRAPH_EXPANDED_FILE = "expanded_graph.gml"
@@ -160,5 +148,7 @@ if __name__ == "__main__":
     export_graph(expanded_graph, GRAPH_EXPANDED_FILE)
 
     # --- Print summary statistics ---
-    print(f"Expanded graph built with {expanded_graph.number_of_nodes()} nodes and {expanded_graph.number_of_edges()} edges.")
-    print(f"Node types: {set(nx.get_node_attributes(expanded_graph, 'node_type').values())}")
+    logging.info(f"Expanded graph built with {expanded_graph.number_of_nodes()} nodes and {expanded_graph.number_of_edges()} edges.")
+    logging.info(f"Node types: {set(nx.get_node_attributes(expanded_graph, 'node_type').values())}")
+    
+    

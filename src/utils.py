@@ -5,8 +5,6 @@ import networkx as nx
 from typing import List, Dict, Any, Tuple
 import re
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-
 
 def fix_trailing_comma(json_str):
     # Replace problematic trailing commas before closing brackets or braces
@@ -87,15 +85,37 @@ def load_jsonl(filepath: str) -> List[Dict[str, Any]]:
         return []
 
 
-def save_graph(graph: nx.Graph, filepath: str):
-    """Saves a NetworkX graph to a file (GML format recommended)."""
-    try:
-        nx.write_gml(graph, filepath)
-        logging.info(f"Successfully saved graph to {filepath}")
-    except IOError as e:
-        logging.error(f"Error saving graph to {filepath}: {e}")
-    except Exception as e:
-         logging.error(f"An unexpected error occurred saving graph: {e}")
+def export_graph(graph: nx.DiGraph, output_path: str):
+    """Export the graph to a file in specified format."""
+    logging.info(f"Exporting graph to {output_path}...")
+    # Before exporting the graph
+    for node, data in graph.nodes(data=True):
+        # Replace None values with strings in node attributes
+        for key, value in data.items():
+            if value is None:
+                data[key] = "none"  # or ""
+
+    for u, v, data in graph.edges(data=True):
+        # Replace None values with strings in edge attributes
+        for key, value in data.items():
+            if value is None:
+                data[key] = "none"  # or ""
+    
+    # Determine export format based on file extension
+    if output_path.endswith('.gml'):
+        nx.write_gml(graph, output_path)
+    elif output_path.endswith('.graphml'):
+        nx.write_graphml(graph, output_path)
+    elif output_path.endswith('.json'):
+        from networkx.readwrite import json_graph
+        import json
+        with open(output_path, 'w') as f:
+            json.dump(json_graph.node_link_data(graph), f, indent=2)
+    else:
+        # Default to GML format
+        nx.write_gml(graph, output_path)
+    
+    logging.info(f"Graph exported successfully to {output_path}")
 
 
 def load_graph(filepath: str) -> nx.Graph:
