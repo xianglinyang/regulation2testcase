@@ -5,27 +5,117 @@ Process:
     Node Creation: Create an AxiomNode in V for each a ∈ A. Create ConceptNodes for unique canonicalized concepts identified in the Subject, Object, and Keywords fields of the axioms. Canonicalization can use stemming, lemmatization, and potentially mapping to a controlled vocabulary or ontology (e.g., map "PII" and "Personal Identifiable Information" to the same node 'Personal Data').
     Edge Inference:
         - relates_to(AxiomNode, ConceptNode): Create edges connecting each axiom to the concept nodes representing its core subject, object, and keywords.
-        - is_a(ConceptNode_sub, ConceptNode_super): Infer initial hierarchical links based on explicit definitions within the text ("Personal data includes name, address...") or simple subsumption identified during extraction/canonicalization. This forms the base hierarchy for expansion.
+        - is_example_of(ConceptNode_sub, ConceptNode_super): Infer initial hierarchical links based on explicit definitions within the text ("Personal data includes name, address...") or simple subsumption identified during extraction/canonicalization. This forms the base hierarchy for expansion.
         - depends_on(AxiomNode_i, AxiomNode_j): Infer dependencies based on explicit cross-references ("See section 3.b"), shared specific conditions, or semantic similarity suggesting prerequisite relationships. Graph algorithms analyzing text references or embedding similarities might be used.
+
+Axioms Example:
+    ID: P014
+    SourceLocation: Document line 14
+    SourceText: Respect our safeguards—don’t circumvent safeguards or safety mitigations in our services unless supported by OpenAI (e.g., domain experts in our Red Teaming Network)⁠ or related to research conducted in accordance with our Sharing & Publication Policy⁠.
+    Subject: User
+    Action: circumvent
+    Object: safeguards or safety mitigations
+    Modality: MUST_NOT
+    Method: None
+    Domain: None
+    Temporal: None
+    Purpose: 'unless supported by OpenAI or related to research'
+    Condition: {'type': 'unless', 'clause': 'supported by OpenAI or related to research conducted in accordance with Sharing & Publication Policy'}
+    Keywords: ['circumvent', 'safeguards', 'safety', 'OpenAI', 'research']
+
+
+Graph Building Process:
+1. for each axiom, extract concepts from the axiom.
+2. remove redundant and duplicate concepts.
+3. create graph nodes for axioms and concepts.
+4. infer additional edges like is_a, depends_on, contradicts.
+5. save the graph to a file.
 '''
+# TODO:
+# 1. merge redundant concepts
+# 2. add nodes and edges to an existing graph
+
 import logging
 import networkx as nx
 from typing import List, Dict, Any, Set
-from src.policy_extractor import Axiom
 import re
-import spacy
 from collections import defaultdict
 
-# Try to load spaCy model if available
-try:
-    nlp = spacy.load("en_core_web_sm")
-except:
-    logging.warning("spaCy model not found. Using simplified text processing.")
-    nlp = None
+from src.policy_extractor import Axiom
+from src.utils import parse_json_response
+from src.llms import LLMClient
 
-def create_graph_nodes(axioms: List[Axiom]) -> nx.DiGraph:
+# --- Concept Extraction and Canonicalization ---
+
+def refine_concepts(concepts: Set[str], llm_client: LLMClient) -> Set[str]:
+    """Refine concepts from the set."""
+    prompt = f"""You are a helpful concept refinement model tasked with ensuring concepts in the corresponding set are clean, concrete, concise, and accurate. \
+    Your task is to remove the redundant concepts from the set and refine the concepts to be more concise and accurate. You should NOT leave any concept out.
+    
+    #### Output Requirement:
+    - Each concept should be a single word or phrase.
+    - Each concept should be in lowercase.
+    - Each concept should be unique.
+    - You should remove the redundant concepts from the set and refine the concepts to be more concise and accurate.
+
+    #### Output Format:
+    ```json
+    [
+        "concept1",
+        "concept2",
+        "concept3"
+    ]
+
+    #### Concepts:
+    {concepts}
+    """
+    response = llm_client.invoke(prompt)
+    concepts = parse_json_response(response)
+    logging.info(f"Refined concepts: {concepts}")
+    return concepts
+
+def extract_concepts(axiom_data: Dict[str, Any], llm_client: LLMClient) -> Set[str]:
+    """Extract and canonicalize concepts from axiom data."""
+    concepts = set()
+    
+    # Fields to extract concepts from
+    fields_to_process = [
+        "Subject",
+        "Action",
+        "Object",
+        "Method",
+        "Domain",
+        "Purpose",
+        "Condition"
+    ]
+    logging.info(f"Extracting concepts from axiom {axiom_data['ID']}...")
+    for field in fields_to_process:
+        if field in axiom_data:
+            value = axiom_data[field]
+            if value is None:
+                continue
+            if isinstance(value, list):
+                # For keyword lists
+                for item in value:
+                    if item and isinstance(item, str):
+                        concepts.add(item)
+            elif value and isinstance(value, str):
+                concepts.add(value)
+            elif value and isinstance(value, dict):
+                for k, v in value.items():
+                    concepts.add(v)
+            else:
+                logging.warning(f"Unexpected value type: {type(value)} for field: {field}")
+    
+    # refine and merge concepts
+    concepts = refine_concepts(concepts, llm_client)
+    return concepts
+
+
+def create_graph_nodes(axioms: List[Axiom], llm_client: LLMClient) -> nx.DiGraph:
     """Creates graph nodes for axioms and initial concepts."""
     logging.info("Creating graph nodes...")
+    
     G = nx.DiGraph() # Using DiGraph for directional relationships
     concepts = set()
 
@@ -43,7 +133,8 @@ def create_graph_nodes(axioms: List[Axiom]) -> nx.DiGraph:
         G.add_node(axiom_id, node_type="axiom", **axiom_data)
         
         # Extract concepts from various axiom fields
-        concepts_to_add = extract_concepts(axiom_data)
+        logging.info(f"Extracting concepts from axiom {axiom_id}...")
+        concepts_to_add = extract_concepts(axiom_data, llm_client)
         
         # Add concepts and connect to axiom
         for concept in concepts_to_add:
@@ -61,69 +152,15 @@ def create_graph_nodes(axioms: List[Axiom]) -> nx.DiGraph:
     logging.info(f"Created graph with {G.number_of_nodes()} nodes initially.")
     return G
 
-def extract_concepts(axiom_data: Dict[str, Any]) -> Set[str]:
-    """Extract and canonicalize concepts from axiom data."""
-    concepts = set()
-    
-    # Fields to extract concepts from
-    fields_to_process = [
-        "prohibited_action", 
-        "object_context", 
-        "condition", 
-        "keywords"
-    ]
-    
-    for field in fields_to_process:
-        if field in axiom_data:
-            value = axiom_data[field]
-            if isinstance(value, list):
-                # For keyword lists
-                for item in value:
-                    if item and isinstance(item, str):
-                        canonicalized = canonicalize_concept(item)
-                        if canonicalized:
-                            concepts.add(canonicalized)
-            elif value and isinstance(value, str) and value.lower() != "null":
-                # For text fields, extract noun phrases if spaCy is available
-                if nlp:
-                    concepts.update(extract_noun_phrases(value))
-                else:
-                    # Fallback to simple tokenization
-                    words = re.findall(r'\b[a-zA-Z]{3,}\b', value)
-                    for word in words:
-                        canonicalized = canonicalize_concept(word)
-                        if canonicalized:
-                            concepts.add(canonicalized)
-    
-    return concepts
 
-def canonicalize_concept(concept: str) -> str:
-    """Standardize concept format (lowercase, remove extra spaces)."""
-    concept = concept.lower().strip()
-    # Remove special characters and normalize spaces
-    concept = re.sub(r'[^\w\s]', ' ', concept)
-    concept = re.sub(r'\s+', ' ', concept)
-    # Only return if concept is meaningful (3+ chars)
-    return concept if len(concept) >= 3 else ""
-
-def extract_noun_phrases(text: str) -> Set[str]:
-    """Extract noun phrases from text using spaCy."""
-    concepts = set()
-    if nlp and text:
-        doc = nlp(text)
-        # Extract noun chunks and named entities
-        for chunk in doc.noun_chunks:
-            canon = canonicalize_concept(chunk.text)
-            if canon:
-                concepts.add(canon)
-        for ent in doc.ents:
-            canon = canonicalize_concept(ent.text)
-            if canon:
-                concepts.add(canon)
-    return concepts
-
-def infer_graph_edges(graph: nx.DiGraph, axioms: List[Axiom]):
-    """Infers and adds edges like is_a, depends_on, contradicts."""
+def infer_graph_edges(graph: nx.DiGraph):
+    """Infers and adds edges like is_a, depends_on, contradicts.
+    Steps:
+    1. Find concepts that co-occur in the same axioms
+    2. Add related_to edges between frequently co-occurring concepts
+    3. Identify potential is_a hierarchical relationships
+    4. Identify potential axiom dependencies
+    """
     logging.info("Inferring additional graph edges...")
     
     # Dictionary to track concept co-occurrences
@@ -156,9 +193,10 @@ def infer_graph_edges(graph: nx.DiGraph, axioms: List[Axiom]):
     identify_hierarchical_relationships(graph)
     
     # 4. Identify potential axiom dependencies
-    identify_axiom_dependencies(graph, axioms)
+    identify_axiom_dependencies(graph)
     
     logging.info(f"Added additional edges. Graph now has {graph.number_of_edges()} edges.")
+
 
 def identify_hierarchical_relationships(graph: nx.DiGraph):
     """Identify potential is_a hierarchical relationships between concepts."""
@@ -170,11 +208,12 @@ def identify_hierarchical_relationships(graph: nx.DiGraph):
             if concept1 != concept2:
                 # If one concept contains the other, it might be a broader category
                 if concept1 in concept2 and len(concept1) < len(concept2):
-                    graph.add_edge(concept2, concept1, type="is_a")
+                    graph.add_edge(concept2, concept1, type="is_example_of")
                 elif concept2 in concept1 and len(concept2) < len(concept1):
-                    graph.add_edge(concept1, concept2, type="is_a")
+                    graph.add_edge(concept1, concept2, type="is_example_of")
 
-def identify_axiom_dependencies(graph: nx.DiGraph, axioms: List[Axiom]):
+
+def identify_axiom_dependencies(graph: nx.DiGraph):
     """Identify dependencies between axioms based on shared concepts."""
     axiom_nodes = [n for n in graph.nodes() if graph.nodes[n].get('node_type') == 'axiom']
     
@@ -199,13 +238,15 @@ def identify_axiom_dependencies(graph: nx.DiGraph, axioms: List[Axiom]):
                     graph.add_edge(axiom1, axiom2, type="related_axiom", 
                                    shared_concepts=list(shared_concepts))
 
-def build_akg(axioms: List[Axiom]) -> nx.DiGraph:
+
+def build_akg(axioms: List[Axiom], llm_client: LLMClient) -> nx.DiGraph:
     """Builds the initial Axiomatic Knowledge Graph."""
     logging.info("Building Axiomatic Knowledge Graph (AKG)...")
-    graph = create_graph_nodes(axioms)
-    infer_graph_edges(graph, axioms)
+    graph = create_graph_nodes(axioms, llm_client)
+    infer_graph_edges(graph)
     logging.info(f"AKG built with {graph.number_of_nodes()} nodes and {graph.number_of_edges()} edges.")
     return graph
+
 
 def export_graph(graph: nx.DiGraph, output_path: str):
     """Export the graph to a file in specified format."""
@@ -239,32 +280,37 @@ def export_graph(graph: nx.DiGraph, output_path: str):
     
     logging.info(f"Graph exported successfully to {output_path}")
 
+
+
 if __name__ == "__main__":
     from src.policy_extractor import extract_axioms
-    from src.config import POLICY_FILE_PATH, GRAPH_FILE
     from src.llms import OpenAILLMClient
     from src.policy_loader import load_regulation_text
-    from src.policy_extractor import policy_extraction
+    from src.policy_extractor import policy_extraction, pretty_print_axioms
+
+    POLICY_FILE_PATH = "/home/ljiahao/xianglin/git_space/regulation2testcase/docs/openai.txt"
+    GRAPH_FILE = "graph.gml"
     
     # Configure logging
     logging.basicConfig(level=logging.INFO, 
                         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
     
     # Initialize LLM client
-    llm_client = OpenAILLMClient("gpt-4o")
+    policy_llm_client = OpenAILLMClient("gpt-4o")
+    builder_llm_client = OpenAILLMClient("gpt-4o-mini")
     
     # Load policy text
     policy_text = load_regulation_text(POLICY_FILE_PATH)
 
-    # extract rules from policy text
-    rules = policy_extraction(llm_client, policy_text)
-    
-    # Extract axioms
+    # extract axioms from policy text
+    rules = policy_extraction(policy_llm_client, policy_text)
     axioms = extract_axioms(rules)
-    logging.info(f"Extracted {len(axioms)} axioms from policy.")
+
+    # pretty print the axioms
+    pretty_print_axioms(axioms)
     
     # Build knowledge graph
-    graph = build_akg(axioms)
+    graph = build_akg(axioms, builder_llm_client)
     
     # Export graph
     export_graph(graph, GRAPH_FILE)
