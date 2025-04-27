@@ -3,16 +3,33 @@ import json
 import logging
 import networkx as nx
 from typing import List, Dict, Any, Tuple
+import re
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 
+def fix_trailing_comma(json_str):
+    # Replace problematic trailing commas before closing brackets or braces
+    fixed_str = re.sub(r',\s*}', '}', json_str)
+    fixed_str = re.sub(r',\s*\]', ']', fixed_str)
+    return fixed_str
 
-def parse_json_response(response):
-    response = response.replace("```json", "").replace("```", "").strip()
-    response = json.loads(response)
-    return response
-
+def parse_json_response(s):
+    # Extract content between code fences
+    pattern = r'```(?:json)?\n([\s\S]*?)\n```'
+    match = re.search(pattern, s)
+    
+    if match:
+        json_str = match.group(1)
+        # Fix trailing commas
+        json_str = fix_trailing_comma(json_str)
+        try:
+            # Parse the JSON string
+            return json.loads(json_str)
+        except json.JSONDecodeError as e:
+            print(f"JSON parsing error: {e}")
+            return s
+    return s
 
 def save_json(data: List[Dict[str, Any]], filepath: str):
     """Saves data to a JSON file."""
