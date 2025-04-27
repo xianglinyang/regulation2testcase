@@ -10,11 +10,10 @@ Target Schema: Use the comprehensive schema, aiming to populate fields for:
 - Action: The core verb or activity being performed or regulated. (e.g., "collect", "share", "generate", "display", "use", "process", "deploy").
 - Object: What is the direct recipient or target of the action? (e.g., "personal data", "user content", "harmful output", "biometric information", "consent").
 - Modality: The force or obligation of the rule (e.g., "MUST", "MUST_NOT", "SHOULD", "MAY", "DEFINITION").
-- Qualifiers: A structured way to capture the details:
-    - Method: How the action is performed, constrained, or qualified. This captures adverbs, prepositional phrases indicating means, or specific techniques. (e.g., "without consent", "using encryption", "via automated means", "in a deceptive manner", "unless anonymized").
-    - Domain: The scope, location, or specific situation where the rule applies. (e.g., "in public spaces", "for law enforcement purposes", "within the EU", "regarding children", "during employment").
-    - Temporal: Specific time elements.
-    - Purpose: The stated Why.
+- Method: How the action is performed, constrained, or qualified. This captures adverbs, prepositional phrases indicating means, or specific techniques. (e.g., "without consent", "using encryption", "via automated means", "in a deceptive manner", "unless anonymized").
+- Domain: The scope, location, or specific situation where the rule applies. (e.g., "in public spaces", "for law enforcement purposes", "within the EU", "regarding children", "during employment").
+- Temporal: Specific time elements.
+- Purpose: The stated Why.
 - Condition: A flexible list to handle various conditional logic (if, unless, except) clearly, separating the type from the clause text.
 - Keywords: Key terms associated with the axiom.
 '''
@@ -22,6 +21,8 @@ import logging
 from typing import List, Dict
 from src.llms import LLMClient, OpenAILLMClient
 from src.utils import parse_json_response
+
+from src.policy_loader import load_regulation_text
 
 from dataclasses import dataclass
 
@@ -36,7 +37,10 @@ class Axiom:
     Action: str
     Object: str
     Modality: str
-    Qualifiers: Dict[str, str]
+    Method: str
+    Domain: str
+    Temporal: str
+    Purpose: str
     Condition: List[str]
     Keywords: List[str]
 
@@ -56,11 +60,10 @@ POLICY_EXTRACT_PROMPT = """As a policy extraction model to clean up policies fro
     - Action: The core verb or activity being performed or regulated. (e.g., "collect", "share", "generate", "display", "use", "process", "deploy").
     - Object: What is the direct recipient or target of the action? (e.g., "personal data", "user content", "harmful output", "biometric information", "consent").
     - Modality: The force or obligation of the rule (e.g., "MUST", "MUST_NOT", "SHOULD", "MAY", "DEFINITION").
-    - Qualifiers: A structured way to capture the details:
-        - Method: How the action is performed, constrained, or qualified. This captures adverbs, prepositional phrases indicating means, or specific techniques. (e.g., "without consent", "using encryption", "via automated means", "in a deceptive manner", "unless anonymized").
-        - Domain: The scope, location, or specific situation where the rule applies. (e.g., "in public spaces", "for law enforcement purposes", "within the EU", "regarding children", "during employment").
-        - Temporal: Specific time elements.
-        - Purpose: The stated Why.
+    - Method: How the action is performed, constrained, or qualified. This captures adverbs, prepositional phrases indicating means, or specific techniques. (e.g., "without consent", "using encryption", "via automated means", "in a deceptive manner", "unless anonymized").
+    - Domain: The scope, location, or specific situation where the rule applies. (e.g., "in public spaces", "for law enforcement purposes", "within the EU", "regarding children", "during employment").
+    - Temporal: Specific time elements.
+    - Purpose: The stated Why.
     - Condition: A flexible list to handle various conditional logic (if, unless, except) clearly, separating the type from the clause text.
     - Keywords: Key terms associated with the axiom.
 
@@ -81,12 +84,10 @@ Provide the output in the following JSON format:
 "Action": "The core verb or activity being performed or regulated. (e.g., 'collect', 'share', 'generate', 'display', 'use', 'process', 'deploy').",
 "Object": "What is the direct recipient or target of the action? (e.g., 'personal data', 'user content', 'harmful output', 'biometric information', 'consent').",
 "Modality": "The force or obligation of the rule (e.g., 'MUST', 'MUST_NOT', 'SHOULD', 'MAY', 'DEFINITION').",
-"Qualifiers": {
-    "Method": "How the action is performed, constrained, or qualified. This captures adverbs, prepositional phrases indicating means, or specific techniques. (e.g., 'without consent', 'using encryption', 'via automated means', 'in a deceptive manner', 'unless anonymized').",
-    "Domain": "The scope, location, or specific situation where the rule applies. (e.g., 'in public spaces', 'for law enforcement purposes', 'within the EU', 'regarding children', 'during employment').",
-    "Temporal": "Specific time elements.",
-    "Purpose": "The stated Why."
-},
+"Method": "How the action is performed, constrained, or qualified. This captures adverbs, prepositional phrases indicating means, or specific techniques. (e.g., 'without consent', 'using encryption', 'via automated means', 'in a deceptive manner', 'unless anonymized').",
+"Domain": "The scope, location, or specific situation where the rule applies. (e.g., 'in public spaces', 'for law enforcement purposes', 'within the EU', 'regarding children', 'during employment').",
+"Temporal": "Specific time elements.",
+"Purpose": "The stated Why."
 "Condition": "List of textual description of circumstances under which the rule applies (e.g., 'if data is transferred outside EU', 'unless anonymized').",
 "Keywords": "List of key terms associated with the axiom."
 },
@@ -98,6 +99,7 @@ Provide the output in the following JSON format:
 - Each policy must focus on explicitly restricting or guiding behaviors.
 - Ensure policies are actionable and clear.
 - Do not combine unrelated statements into one policy block.
+- Try to be specific and concise in each field.
 
 #### Policy Document:
 """
@@ -113,7 +115,10 @@ def extract_axioms(rules):
             Action=rule["Action"],
             Object=rule["Object"],
             Modality=rule["Modality"],
-            Qualifiers=rule["Qualifiers"],
+            Method=rule["Method"],
+            Domain=rule["Domain"],
+            Temporal=rule["Temporal"],
+            Purpose=rule["Purpose"],
             Condition=rule["Condition"],
             Keywords=rule["Keywords"]
         )
@@ -126,14 +131,7 @@ def policy_extraction(llm_client: LLMClient, regulation_text):
     rules = parse_json_response(response)
     return rules
 
-
-if __name__ == "__main__":
-    from src.policy_loader import load_regulation_text
-    regulation_text = load_regulation_text("/home/ljiahao/xianglin/git_space/regulation2testcase/docs/openai.txt")
-    llm_client = OpenAILLMClient(model_name="gpt-4o")
-    rules = policy_extraction(llm_client, regulation_text)
-    axioms = extract_axioms(rules)
-
+def pretty_print_axioms(axioms: List[Axiom]):
     # pretty print the axioms
     for axiom in axioms:
         print(f"ID: {axiom.ID}")
@@ -143,8 +141,21 @@ if __name__ == "__main__":
         print(f"Action: {axiom.Action}")
         print(f"Object: {axiom.Object}")
         print(f"Modality: {axiom.Modality}")
-        print(f"Qualifiers: {axiom.Qualifiers}")
+        print(f"Method: {axiom.Method}")
+        print(f"Domain: {axiom.Domain}")
+        print(f"Temporal: {axiom.Temporal}")
+        print(f"Purpose: {axiom.Purpose}")
         print(f"Condition: {axiom.Condition}")
         print(f"Keywords: {axiom.Keywords}")
         print("-"*100)
+
+
+if __name__ == "__main__":
+    regulation_text = load_regulation_text("/home/ljiahao/xianglin/git_space/regulation2testcase/docs/openai.txt")
+    llm_client = OpenAILLMClient(model_name="gpt-4o")
+    rules = policy_extraction(llm_client, regulation_text)
+    axioms = extract_axioms(rules)
+
+    # pretty print the axioms
+    pretty_print_axioms(axioms)
 
