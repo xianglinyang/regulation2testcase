@@ -44,8 +44,45 @@ from collections import defaultdict
 from src.policy_extractor import Axiom
 from src.utils import parse_json_response
 from src.llms import LLMClient
-
+from src.graph_sampling import get_node_context
 # --- Concept Extraction and Canonicalization ---
+NONE2VALID_SYSTEM_PROMPT = """You are an expert in the field of policy analysis and interpretation. \
+Your task is to generate a valid case of a concept in violeting a policy.
+"""
+
+NONE2VALID_USER_PROMPT = """As a policy analysis expert, your task is to generate a list of valid [concept] involving violetion of the following policy.\
+If inapplicable, return an empty list.
+#### Input Policy:
+[policy]
+
+#### Output Requirement:
+- Output 5 valid cases of the concept in violeting the policy.
+- Try to be creative.
+- Each case should be a valid case of the concept in violeting the policy and distinct from each other.
+- For each case, be concise and to the point, keep it short and simple. Less than 10 words.
+
+#### Output Format
+```json
+{
+    "[concept]": ["A valid case of the concept in violeting the policy.", "Another valid case of the concept in violeting the policy."]
+}
+```
+""" 
+def generate_none2valid_llm(llm_client: LLMClient, source_text: str, concept_role: str) -> List[str]:
+    """Uses LLM to generate a valid case of a concept in violeting a policy."""
+    logging.info(f"Find None in {concept_role} of {source_text}...")
+
+    prompt = NONE2VALID_USER_PROMPT.replace('[concept]', concept_role).replace('[policy]', source_text)
+    logging.debug(f"Generating a valid case of {concept_role} in axiom {source_text}...")
+
+    response = llm_client.invoke(
+        prompt=prompt,
+        system_prompt=NONE2VALID_SYSTEM_PROMPT,
+    )
+    llm_output = parse_json_response(response)
+    valid_case = llm_output[concept_role]
+    logging.debug(f"Generated a valid case of {concept_role}: {valid_case}")
+    return valid_case
 
 def refine_concepts(concepts: Set[str], llm_client: LLMClient) -> Set[str]:
     """Refine concepts from the set."""
@@ -65,6 +102,7 @@ def refine_concepts(concepts: Set[str], llm_client: LLMClient) -> Set[str]:
         "concept2",
         "concept3"
     ]
+    ```
 
     #### Concepts:
     {concepts}
@@ -76,8 +114,6 @@ def refine_concepts(concepts: Set[str], llm_client: LLMClient) -> Set[str]:
 
 def extract_concepts(axiom_data: Dict[str, Any], llm_client: LLMClient) -> Set[str]:
     """Extract and canonicalize concepts from axiom data."""
-    concepts = set()
-    
     # Fields to extract concepts from
     fields_to_process = [
         "Subject",
@@ -88,13 +124,18 @@ def extract_concepts(axiom_data: Dict[str, Any], llm_client: LLMClient) -> Set[s
         "Purpose",
         "Condition"
     ]
+    full_concepts = dict()
     logging.info(f"Extracting concepts from axiom {axiom_data['ID']}...")
     for field in fields_to_process:
+        logging.info(f"Extracting concepts from field {field}...")
+        concepts = set()
         if field in axiom_data:
             value = axiom_data[field]
-            if value is None:
-                continue
-            if isinstance(value, list):
+            if value is None or isinstance(value, str) and value.lower() == "none":
+                concept = generate_none2valid_llm(llm_client, axiom_data['SourceText'], field)
+                for c in concept:
+                    concepts.add(c)
+            elif isinstance(value, list):
                 # For keyword lists
                 for item in value:
                     if item and isinstance(item, str):
@@ -106,10 +147,15 @@ def extract_concepts(axiom_data: Dict[str, Any], llm_client: LLMClient) -> Set[s
                     concepts.add(v)
             else:
                 logging.warning(f"Unexpected value type: {type(value)} for field: {field}")
-    
-    # refine and merge concepts
-    concepts = refine_concepts(concepts, llm_client)
-    return concepts
+        else:
+            concept = generate_none2valid_llm(llm_client, axiom_data['SourceText'], field)
+            for c in concept:
+                concepts.add(c)
+        
+        logging.info(f"Concepts from field {field}: {concepts}")
+        concepts = refine_concepts(concepts, llm_client)
+        full_concepts[field] = concepts
+    return full_concepts
 
 
 def create_graph_nodes(axioms: List[Axiom], llm_client: LLMClient) -> nx.DiGraph:
@@ -117,7 +163,6 @@ def create_graph_nodes(axioms: List[Axiom], llm_client: LLMClient) -> nx.DiGraph
     logging.info("Creating graph nodes...")
     
     G = nx.DiGraph() # Using DiGraph for directional relationships
-    concepts = set()
 
     for i, axiom in enumerate(axioms):
         # Handle both dict-like objects and Axiom dataclass instances
@@ -135,19 +180,12 @@ def create_graph_nodes(axioms: List[Axiom], llm_client: LLMClient) -> nx.DiGraph
         # Extract concepts from various axiom fields
         logging.info(f"Extracting concepts from axiom {axiom_id}...")
         concepts_to_add = extract_concepts(axiom_data, llm_client)
-        
-        # Add concepts and connect to axiom
-        for concept in concepts_to_add:
-            concepts.add(concept)
-            G.add_edge(axiom_id, concept, type="relates_to")
 
-    # Ensure all concepts are added as nodes with proper attributes
-    for concept in concepts:
-        if concept not in G:
-            G.add_node(concept, node_type="concept", label=concept)
-        elif G.nodes[concept].get('node_type') is None:
-            G.nodes[concept]['node_type'] = "concept"
-            G.nodes[concept]['label'] = concept
+        # Add concepts and connect to axiom, field as role of the concept
+        for field, concepts in concepts_to_add.items():
+            for concept in concepts:
+                G.add_edge(axiom_id, concept, type="relates_to")
+                G.add_node(concept, node_type="concept", label=concept, role=field)
 
     logging.info(f"Created graph with {G.number_of_nodes()} nodes initially.")
     return G
@@ -248,53 +286,20 @@ def build_akg(axioms: List[Axiom], llm_client: LLMClient) -> nx.DiGraph:
     return graph
 
 
-def export_graph(graph: nx.DiGraph, output_path: str):
-    """Export the graph to a file in specified format."""
-    logging.info(f"Exporting graph to {output_path}...")
-    # Before exporting the graph
-    for node, data in graph.nodes(data=True):
-        # Replace None values with strings in node attributes
-        for key, value in data.items():
-            if value is None:
-                data[key] = "None"  # or ""
-
-    for u, v, data in graph.edges(data=True):
-        # Replace None values with strings in edge attributes
-        for key, value in data.items():
-            if value is None:
-                data[key] = "None"  # or ""
-    
-    # Determine export format based on file extension
-    if output_path.endswith('.gml'):
-        nx.write_gml(graph, output_path)
-    elif output_path.endswith('.graphml'):
-        nx.write_graphml(graph, output_path)
-    elif output_path.endswith('.json'):
-        from networkx.readwrite import json_graph
-        import json
-        with open(output_path, 'w') as f:
-            json.dump(json_graph.node_link_data(graph), f, indent=2)
-    else:
-        # Default to GML format
-        nx.write_gml(graph, output_path)
-    
-    logging.info(f"Graph exported successfully to {output_path}")
-
-
 
 if __name__ == "__main__":
     from src.policy_extractor import extract_axioms
     from src.llms import OpenAILLMClient
     from src.policy_loader import load_regulation_text
     from src.policy_extractor import policy_extraction, pretty_print_axioms
+    from src.utils import export_graph
+    from src.logging_utils import setup_logging
+
+    setup_logging(task_name="graph_builder")
 
     POLICY_FILE_PATH = "/home/ljiahao/xianglin/git_space/regulation2testcase/docs/openai.txt"
     GRAPH_FILE = "graph.gml"
-    
-    # Configure logging
-    logging.basicConfig(level=logging.INFO, 
-                        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-    
+
     # Initialize LLM client
     policy_llm_client = OpenAILLMClient("gpt-4o")
     builder_llm_client = OpenAILLMClient("gpt-4o-mini")
@@ -307,6 +312,7 @@ if __name__ == "__main__":
     axioms = extract_axioms(rules)
 
     # pretty print the axioms
+    logging.info("Axioms:")
     pretty_print_axioms(axioms)
     
     # Build knowledge graph
@@ -316,6 +322,6 @@ if __name__ == "__main__":
     export_graph(graph, GRAPH_FILE)
     
     # Print summary statistics
-    print(f"Graph built with {graph.number_of_nodes()} nodes and {graph.number_of_edges()} edges.")
-    print(f"Node types: {set(nx.get_node_attributes(graph, 'node_type').values())}")
-    print(f"Edge types: {set(nx.get_edge_attributes(graph, 'type').values())}")
+    logging.info(f"Graph built with {graph.number_of_nodes()} nodes and {graph.number_of_edges()} edges.")
+    logging.info(f"Node types: {set(nx.get_node_attributes(graph, 'node_type').values())}")
+    logging.info(f"Edge types: {set(nx.get_edge_attributes(graph, 'type').values())}")
