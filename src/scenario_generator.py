@@ -7,6 +7,9 @@ import numpy as np
 from tqdm import tqdm
 from vllm import LLM, SamplingParams
 from transformers import AutoTokenizer, AutoModelForCausalLM
+import networkx as nx
+
+from src.logging_utils import setup_logging
 from src.str_utils import de_md_logits_processor_for_llama3_1, flaming_tokens, instruction_post_process
 
 
@@ -185,27 +188,48 @@ def set_seed(seed):
 
 
 if __name__ == "__main__":
-
-    output_folder = "/home/ljiahao/xianglin/git_space/regulation2testcase/output"
-    os.makedirs(output_folder, exist_ok=True)
-
+    from src.graph_sampling import select_target_nodes, get_node_context, SAMPLING_STRATEGY_LEAF_CONCEPTS
+    
+    setup_logging(task_name="scenario_generator")
     SEED = 42
     set_seed(SEED)
 
-    timestamp = int(time.time())
     model_name = "Orenguteng/Llama-3-8B-Lexi-Uncensored"
-    rule = "Do not use subliminal, manipulative, or deceptive techniques that distort a person’s behavior so that they are unable to make informed decisions in a way that is likely to cause harm."
-    concept = "behavior distortion"
+    abbr = "llama3-8b-uncensored"
+    num_per_target = 50
 
-    
-    # Create output file / folder
-    output_filename = f"Magpie_{model_name.split('/')[-1]}_{timestamp}_ins.json"
-    output_dir = f"{output_folder}/{output_filename}"
+    output_folder = f"/mnt/hdd1/ljiahao/xianglin/regulation2testcase/output/raw/{abbr}"
+    os.makedirs(output_folder, exist_ok=True)
 
-    generator = ScenarioGeneratorHF(model_name=model_name, device="cuda:6")
-    # generator = ScenarioGeneratorVLLM(model_name=model_name)
+    # --- Load the graph ---
+    GRAPH_PATH = "expanded_graph.gml"
+    graph = nx.read_gml(GRAPH_PATH)
+    logging.info(f"Graph loaded from {GRAPH_PATH}")
 
-    output_list = generator.generate_scenarios(rule, concept, num=50)
-    save_results(output_list, rule, concept, model_name, temperature=1.0, top_p=1.0, seed=SEED, output_dir=output_dir)
+    # --- Print summary statistics ---
+    logging.info(f"Graph built with {graph.number_of_nodes()} nodes and {graph.number_of_edges()} edges.")
+    logging.info(f"Node types: {set(nx.get_node_attributes(graph, 'node_type').values())}")
+    logging.info(f"Edge types: {set(nx.get_edge_attributes(graph, 'type').values())}")
+
+    # --- Sample a target node ---
+    targets = select_target_nodes(graph, SAMPLING_STRATEGY_LEAF_CONCEPTS)
+    logging.info(f"Selected {len(targets)} target nodes for query generation using strategy '{SAMPLING_STRATEGY_LEAF_CONCEPTS}'.")
+
+    generator = ScenarioGeneratorHF(model_name=model_name, device="cuda:4")
+
+    for target in tqdm(targets):
+        logging.info(f"Target: {target}")
+        
+        context = get_node_context(target, graph)
+        policy_text = context["SourceText"]
+        logging.info(f"Policy text: {policy_text}")
+
+        output_list = generator.generate_scenarios(policy_text, target, num=num_per_target)
+        
+        # Create output file / folder
+        timestamp = time.strftime("%Y%m%d-%H%M%S")
+        output_filename = f"{timestamp}.json"
+        output_path = os.path.join(output_folder, output_filename)
+        save_results(output_list, policy_text, target, model_name, temperature=1.0, top_p=1.0, seed=SEED, output_dir=output_path)
 
 
