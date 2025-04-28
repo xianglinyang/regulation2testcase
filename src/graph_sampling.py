@@ -155,10 +155,10 @@ def demo():
     logging.info(f"Selected {len(targets)} target nodes for query generation using strategy '{SAMPLING_STRATEGY_ALL_CONCEPTS}'.")
 
     # --- Sample a target node ---
-    selected_targets = random.sample(targets, 1)[0]
-    logging.info(f"Selected target: {selected_targets}")
+    selected_target = random.sample(targets, 1)[0]
+    logging.info(f"Selected target: {selected_target}")
     
-    context = get_node_context(selected_targets, graph)
+    context = get_node_context(selected_target, graph)
     logging.info(f"\nContext: {context}")
 
             
