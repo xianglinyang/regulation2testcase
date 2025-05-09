@@ -88,7 +88,7 @@ def add_expansion_to_graph(graph: nx.Graph, parent_node_id: str, sub_concepts: L
         sub_concept_id = sub_concept.lower().strip()
         if sub_concept_id and sub_concept_id != parent_node_id:
             if sub_concept_id not in graph:
-                graph.add_node(sub_concept_id, node_type="concept", label=sub_concept, expansion_depth=current_depth + 1)
+                graph.add_node(sub_concept_id, node_type="concept", label=sub_concept, role=graph.nodes[parent_node_id].get('role'), expansion_depth=current_depth + 1)
             graph.add_edge(sub_concept_id, parent_node_id, type="is_example_of") # Child -> Parent for is_example_of
 
 
